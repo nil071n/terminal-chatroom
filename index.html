@@ -317,6 +317,12 @@
       loginError.textContent = "Username cannot be empty.";
       return;
     }
+    // require launcher token
+    const token = new URLSearchParams(location.search).get('token');
+    if (!token) {
+      loginError.textContent = "Launcher token required. Click Open in Launcher.";
+      return;
+    }
     loginError.textContent = "";
     joinBtn.disabled = true;
     joinBtn.textContent = "Connecting...";
@@ -351,8 +357,15 @@
 
   // ── WebSocket ──
   function connect(username) {
+    const token = new URLSearchParams(location.search).get('token');
+    if (!token) {
+      loginError.textContent = "Launcher token required.";
+      joinBtn.disabled = false;
+      joinBtn.textContent = 'Connect';
+      return;
+    }
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}`);
+    ws = new WebSocket(`${proto}://${location.host}/?token=${encodeURIComponent(token)}`);
 
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "join", username }));
