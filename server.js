@@ -8,8 +8,37 @@ const clients = new Map(); // ws -> { username }
 const chatHistory = [];
 const MAX_HISTORY = 200;
 
-// Serve static HTML
+// Simple session tokens issued by /auth
+const sessions = new Map(); // token -> { pcName, created }
+
+// Serve static HTML and auth endpoint
 const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/auth') {
+    // accept JSON { pcName, signature }
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try {
+        const obj = JSON.parse(body || '{}');
+        const pcName = (obj.pcName || '').toString().slice(0,64);
+        if (!pcName) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'pcName required' }));
+          return;
+        }
+        // create a simple random token
+        const token = require('crypto').randomBytes(18).toString('hex');
+        sessions.set(token, { pcName, created: Date.now() });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ token }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end('Invalid request');
+      }
+    });
+    return;
+  }
+
   if (req.url === "/" || req.url === "/index.html") {
     fs.readFile(path.join(__dirname, "index.html"), (err, data) => {
       if (err) {
@@ -46,7 +75,17 @@ function userList() {
   return [...clients.values()].map((c) => c.username);
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // require a token query parameter issued by /auth
+  const url = req && req.url ? req.url : '';
+  let token = null;
+  try { token = new URL('http://x' + url).searchParams.get('token'); } catch (e) { token = null; }
+  if (!token || !sessions.has(token)) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Auth required: must connect using launcher token' }));
+    try { ws.close(); } catch (e) {}
+    return;
+  }
+
   let registered = false;
 
   ws.on("message", (raw) => {
@@ -160,7 +199,6 @@ wss.on("connection", (ws) => {
     }
   });
 });
-
 server.listen(PORT, () => {
   console.log(`\n  Terminal Chatroom running at http://localhost:${PORT}\n`);
 });
