@@ -1,0 +1,12 @@
+{
+  "name": "terminal-chatroom",
+  "version": "1.0.0",
+  "description": "Terminal-style chatroom for the browser",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
