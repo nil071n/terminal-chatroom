@@ -2,19 +2,112 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
+const USERS_FILE = path.join(__dirname, 'users.json');
+
 const clients = new Map(); // ws -> { username }
 const chatHistory = [];
 const MAX_HISTORY = 200;
 
-// Simple session tokens issued by /auth
-const sessions = new Map(); // token -> { pcName, created }
+// Sessions for launcher-issued join tokens
+const sessions = new Map(); // token -> { pcName, username, created }
+
+// Simple users store (users.json)
+function loadUsers(){
+  try { return JSON.parse(fs.readFileSync(USERS_FILE,'utf8')||'{}'); } catch(e){ return {}; }
+}
+function saveUsers(u){ fs.writeFileSync(USERS_FILE, JSON.stringify(u, null, 2)); }
+const users = loadUsers();
 
 // Serve static HTML and auth endpoint
 const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/register') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try {
+        const obj = JSON.parse(body || '{}');
+        const username = (obj.username || '').toString().trim().slice(0,40);
+        const password = (obj.password || '').toString();
+        if (!username || !password) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'username and password required' }));
+          return;
+        }
+        if (users[username]) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'username exists' }));
+          return;
+        }
+        const hash = bcrypt.hashSync(password, 10);
+        users[username] = { passwordHash: hash };
+        saveUsers(users);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end('Invalid request');
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/login') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try {
+        const obj = JSON.parse(body || '{}');
+        const username = (obj.username || '').toString();
+        const password = (obj.password || '').toString();
+        if (!username || !password) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'username and password required' }));
+          return;
+        }
+        const u = users[username];
+        if (!u) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid credentials' }));
+          return;
+        }
+        const ok = bcrypt.compareSync(password, u.passwordHash);
+        if (!ok) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid credentials' }));
+          return;
+        }
+        const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '12h' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ token }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end('Invalid request');
+      }
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/auth') {
-    // accept JSON { pcName, signature }
+    // require Authorization: Bearer <JWT>
+    const auth = req.headers['authorization'] || '';
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'missing auth token' }));
+      return;
+    }
+    let payload;
+    try { payload = jwt.verify(match[1], JWT_SECRET); } catch (e) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid auth token' }));
+      return;
+    }
+
     let body = '';
     req.on('data', (chunk) => body += chunk);
     req.on('end', () => {
@@ -26,9 +119,8 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ error: 'pcName required' }));
           return;
         }
-        // create a simple random token
         const token = require('crypto').randomBytes(18).toString('hex');
-        sessions.set(token, { pcName, created: Date.now() });
+        sessions.set(token, { pcName, username: payload.username, created: Date.now() });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ token }));
       } catch (e) {
